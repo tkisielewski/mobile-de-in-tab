@@ -1,17 +1,52 @@
 // ==UserScript==
 // @name         mobile.de - windowed large photo
-// @version      2.3
-// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Leaves trackpad pinch zoom and two-finger panning to Chrome.
+// @version      2.5
+// @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.js
+// @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.js
+// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Leaves trackpad pinch zoom and two-finger panning to Chrome.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM_download
+// @grant        unsafeWindow
+// @connect      img.classistatic.de
 // @sandbox      raw
 // ==/UserScript==
 (() => {
     'use strict';
     let activeClose;
     let clickedPhoto;
+    const page = unsafeWindow;
+    const imageExtensions = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/avif': 'avif'};
+    function savePhoto(photo, name, job) {
+        return new Promise((resolve, reject) => {
+            const fail = error => reject(new Error(error?.error || error?.message || 'Download failed'));
+            job.abort = () => reject(new Error('Cancelled'));
+            const request = GM_xmlhttpRequest({
+                method: 'GET', url: photo.src, responseType: 'blob', timeout: 60000,
+                onerror: fail, ontimeout: () => fail(new Error('Image request timed out')),
+                onload: response => {
+                    if (job.cancelled) return fail(new Error('Cancelled'));
+                    const blob = response.response;
+                    const extension = imageExtensions[blob?.type?.split(';')[0].toLowerCase()];
+                    if (response.status !== 200 || !blob?.size || !extension) {
+                        return fail(new Error('Server did not return a supported image'));
+                    }
+                    try {
+                        const download = GM_download({
+                            url: blob, name: name + '.' + extension, saveAs: false,
+                            conflictAction: 'uniquify',
+                            onload: resolve, onerror: fail,
+                            ontimeout: () => fail(new Error('Saving image timed out'))
+                        });
+                        job.abort = () => { download?.abort(); fail(new Error('Cancelled')); };
+                    } catch (error) { fail(error); }
+                }
+            });
+            job.abort = () => { request?.abort(); fail(new Error('Cancelled')); };
+        });
+    }
     function photoKey(src) {
         try { const u = new URL(src, location.href); return u.hostname + u.pathname; }
         catch { return ''; }
@@ -41,7 +76,7 @@
         let selected = 0;
         for (const img of gallery.querySelectorAll('[data-testid="slide"] img')) {
             const url = new URL(img.src, location.href);
-            if (!url.hostname.endsWith('classistatic.de')) continue;
+            if (url.protocol !== 'https:' || url.hostname !== 'img.classistatic.de') continue;
             url.searchParams.set('rule', 'mo-1600');
             if (photos.some(p => p.src === url.href)) continue;
 
@@ -82,7 +117,14 @@
             counter.textContent = (selected + 1) + ' / ' + photos.length;
         }
         const previousOverflow = document.body.style.overflow;
+        let downloadJob;
+        function cancelDownloads() {
+            if (!downloadJob) return;
+            downloadJob.cancelled = true;
+            downloadJob.abort?.();
+        }
         function close() {
+            cancelDownloads();
             overlay.remove();
             document.body.style.overflow = previousOverflow;
             document.removeEventListener('keydown', onKey, true);
@@ -93,10 +135,49 @@
             b.type = 'button'; b.setAttribute('aria-label', label); b.textContent = text;
             b.style.cssText = 'position:absolute;background:#222d;color:white;border:1px solid #666;border-radius:12px;padding:12px 18px;font:24px sans-serif;cursor:pointer;' + css;
             b.addEventListener('click', action); overlay.appendChild(b);
+            return b;
         }
         button('Previous photo', '‹', 'left:12px;top:50%;', () => show(-1));
         button('Next photo', '›', 'right:12px;top:50%;', () => show(1));
         button('Close large photos', '×', 'right:12px;top:12px;', close);
+        const downloadStatus = document.createElement('span');
+        downloadStatus.setAttribute('role', 'status');
+        downloadStatus.style.cssText = 'position:absolute;top:80px;left:12px;max-width:75%;background:#111e;color:white;padding:8px;font:16px sans-serif;';
+        overlay.appendChild(downloadStatus);
+        const savedPhotos = new Set();
+        const saveButton = button('Save all photos', 'Save all photos', 'left:12px;top:12px;font-size:16px;', async () => {
+            if (downloadJob) return;
+            const job = {cancelled: false};
+            downloadJob = job;
+            saveButton.disabled = true;
+            cancelButton.hidden = false;
+            const adId = new URL(location.href).searchParams.get('id')?.replace(/[^a-zA-Z0-9_-]/g, '') || 'ad';
+            const failures = [];
+            try {
+                for (let i = 0; i < photos.length && !job.cancelled; i++) {
+                    if (savedPhotos.has(i)) continue;
+                    downloadStatus.textContent = 'Saving photo ' + (i + 1) + ' of ' + photos.length + '…';
+                    try {
+                        await savePhoto(photos[i], 'mobile-de-' + adId + '-' + String(i + 1).padStart(3, '0'), job);
+                        savedPhotos.add(i);
+                    } catch (error) {
+                        if (job.cancelled) break;
+                        failures.push((i + 1) + ': ' + error.message);
+                        // These errors affect every file; stop instead of repeating them.
+                        if (/not_enabled|not_permitted|not_supported|not_whitelisted/.test(error.message)) break;
+                    }
+                }
+                downloadStatus.textContent = (job.cancelled ? 'Cancelled. ' : '') + savedPhotos.size + ' of ' + photos.length + ' photos saved.'
+                    + (failures.length ? ' Failed: ' + failures.join('; ') + '. Check Tampermonkey download permissions, then retry.' : '');
+            } finally {
+                downloadJob = undefined;
+                cancelButton.hidden = true;
+                saveButton.disabled = savedPhotos.size === photos.length;
+                saveButton.textContent = savedPhotos.size === photos.length ? 'All photos saved' : 'Save remaining photos';
+            }
+        });
+        const cancelButton = button('Cancel downloads', 'Cancel', 'left:200px;top:12px;font-size:16px;', cancelDownloads);
+        cancelButton.hidden = true;
         function onKey(e) {
             if (!['Escape','ArrowLeft','ArrowRight'].includes(e.key)) return;
             e.preventDefault(); e.stopImmediatePropagation();
@@ -117,8 +198,8 @@
         return Promise.resolve();
     }
     for (const name of ['requestFullscreen','webkitRequestFullscreen','webkitRequestFullScreen']) {
-        if (typeof Element.prototype[name] === 'function') {
-            Object.defineProperty(Element.prototype, name, {configurable:true,writable:true,value:stayInTab});
+        if (typeof page.Element.prototype[name] === 'function') {
+            Object.defineProperty(page.Element.prototype, name, {configurable:true,writable:true,value:stayInTab});
         }
     }
 })();
