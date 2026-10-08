@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         mobile.de - windowed large photo
-// @version      2.6
+// @version      2.7
 // @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
-// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Leaves trackpad pinch zoom and two-finger panning to Chrome.
+// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
 // @run-at       document-start
@@ -103,15 +103,30 @@
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-label', 'Large ad photos');
         overlay.tabIndex = -1;
-        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#111;display:flex;align-items:center;justify-content:center;';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#111;overflow:auto;';
         const image = document.createElement('img');
-        image.style.cssText = 'position:static!important;width:100%!important;height:100%!important;object-fit:contain!important;';
-        overlay.appendChild(image);
+        image.style.cssText = 'position:static!important;display:block!important;max-width:none!important;max-height:none!important;object-fit:contain!important;margin:auto!important;';
+        const stage = document.createElement('div');
+        stage.style.cssText = 'min-width:100%;min-height:100%;display:grid;place-items:center;';
+        stage.appendChild(image);
+        overlay.appendChild(stage);
+        const initialPixelRatio = window.devicePixelRatio || 1;
+        function sizePhoto() {
+            // Page zoom reduces CSS viewport dimensions and increases devicePixelRatio.
+            // Compensate for that reduction so the photo grows with browser zoom.
+            const zoom = (window.devicePixelRatio || 1) / initialPixelRatio;
+            image.style.setProperty('width', window.innerWidth * zoom + 'px', 'important');
+            image.style.setProperty('height', window.innerHeight * zoom + 'px', 'important');
+        }
+        sizePhoto();
+        window.addEventListener('resize', sizePhoto);
         const counter = document.createElement('span');
-        counter.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:#111c;color:white;padding:6px 12px;border-radius:8px;font:16px sans-serif;';
+        counter.style.cssText = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:#111c;color:white;padding:6px 12px;border-radius:8px;font:16px sans-serif;';
         overlay.appendChild(counter);
         function show(delta = 0) {
             selected = (selected + delta + photos.length) % photos.length;
+            overlay.scrollTop = 0;
+            overlay.scrollLeft = 0;
             image.src = photos[selected].src;
             image.alt = photos[selected].alt;
             counter.textContent = (selected + 1) + ' / ' + photos.length;
@@ -125,6 +140,7 @@
         }
         function close() {
             cancelDownloads();
+            window.removeEventListener('resize', sizePhoto);
             overlay.remove();
             document.body.style.overflow = previousOverflow;
             document.removeEventListener('keydown', onKey, true);
@@ -133,7 +149,7 @@
         function button(label, text, css, action) {
             const b = document.createElement('button');
             b.type = 'button'; b.setAttribute('aria-label', label); b.textContent = text;
-            b.style.cssText = 'position:absolute;background:#222d;color:white;border:1px solid #666;border-radius:12px;padding:12px 18px;font:24px sans-serif;cursor:pointer;' + css;
+            b.style.cssText = 'position:fixed;background:#222d;color:white;border:1px solid #666;border-radius:12px;padding:12px 18px;font:24px sans-serif;cursor:pointer;' + css;
             b.addEventListener('click', action); overlay.appendChild(b);
             return b;
         }
@@ -142,7 +158,7 @@
         button('Close large photos', '×', 'right:12px;top:12px;', close);
         const downloadStatus = document.createElement('span');
         downloadStatus.setAttribute('role', 'status');
-        downloadStatus.style.cssText = 'position:absolute;top:80px;left:12px;max-width:75%;background:#111e;color:white;padding:8px;font:16px sans-serif;';
+        downloadStatus.style.cssText = 'position:fixed;top:80px;left:12px;max-width:75%;background:#111e;color:white;padding:8px;font:16px sans-serif;';
         overlay.appendChild(downloadStatus);
         const savedPhotos = new Set();
         const saveButton = button('Save all photos', 'Save all photos', 'left:12px;top:12px;font-size:16px;', async () => {
