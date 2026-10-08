@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         mobile.de - windowed large photo
-// @version      2.5
-// @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.js
-// @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.js
+// @version      2.6
+// @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
+// @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Leaves trackpad pinch zoom and two-finger panning to Chrome.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
