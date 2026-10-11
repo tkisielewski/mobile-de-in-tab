@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         mobile.de - windowed large photo
-// @version      2.8
+// @name         mobile.de – Ad Tools
+// @version      2.9
 // @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
-// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning. Click ad locations to open Google Maps driving directions in a new tab.
+// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning. Click ad locations to open Google Maps driving directions in a new tab. Translate seller descriptions in-place to Polish with automatic language detection and restore the original text.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
 // @run-at       document-start
@@ -18,6 +18,118 @@
     let activeClose;
     let clickedPhoto;
     const page = unsafeWindow;
+
+    const descriptionControls = new WeakMap();
+    async function translateDescription(texts, status) {
+        if (!page.LanguageDetector || !page.Translator) {
+            throw new Error('This Chrome version does not support description translation. Update Chrome and try again.');
+        }
+        let detector, translator;
+        const monitor = model => model.addEventListener('downloadprogress', event => {
+            status.textContent = 'Downloading translation model… ' + Math.round(event.loaded * 100) + '%';
+        });
+        try {
+            status.textContent = 'Detecting description language…';
+            detector = await page.LanguageDetector.create({monitor});
+            const languages = await detector.detect(texts.join('\n'));
+            const sourceLanguage = languages[0]?.detectedLanguage;
+            if (!sourceLanguage || sourceLanguage === 'und') throw new Error('Could not detect the description language.');
+            if (sourceLanguage === 'pl') return texts;
+            const options = {sourceLanguage, targetLanguage: 'pl'};
+            if (await page.Translator.availability(options) === 'unavailable') {
+                throw new Error('Chrome cannot translate this language into Polish.');
+            }
+            translator = await page.Translator.create({...options, monitor});
+            const results = [];
+            for (const text of texts) {
+                status.textContent = 'Translating to Polish… ' + (results.length + 1) + ' / ' + texts.length;
+                const result = await translator.translate(text.trim());
+                if (!result?.trim()) throw new Error('Translation returned no text. Try again.');
+                // Keep spacing around inline markup such as bold text and links.
+                results.push(text.match(/^\s*/)[0] + result.trim() + text.match(/\s*$/)[0]);
+            }
+            return results;
+        } finally {
+            detector?.destroy();
+            translator?.destroy();
+        }
+    }
+    function addDescriptionTranslation() {
+        for (const description of document.querySelectorAll('[data-testid="vip-vehicle-description-text"]')) {
+            const existing = descriptionControls.get(description);
+            if (existing?.isConnected) continue;
+            const section = description.closest('section');
+            const heading = section?.querySelector('h2,h3');
+            if (!heading) continue;
+            const controls = document.createElement('div');
+            controls.className = 'notranslate';
+            controls.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0;';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Translate description to Polish';
+            button.style.cssText = 'padding:8px 12px;border:1px solid #888;border-radius:6px;color:inherit;background:transparent;cursor:pointer;font:inherit;';
+            const status = document.createElement('span');
+            status.setAttribute('role', 'status');
+            controls.append(button, status);
+            heading.after(controls);
+            descriptionControls.set(description, controls);
+            let showingTranslation = false;
+            let savedNodes = [];
+            let cachedText, cachedTranslation;
+            let originalLanguage;
+            let hadNoTranslate;
+            button.addEventListener('click', async () => {
+                if (showingTranslation) {
+                    for (const entry of savedNodes) {
+                        if (description.contains(entry.node) && entry.node.textContent === entry.translated) {
+                            entry.node.textContent = entry.original;
+                        }
+                    }
+                    if (originalLanguage === null) description.removeAttribute('lang');
+                    else description.setAttribute('lang', originalLanguage);
+                    if (!hadNoTranslate) description.classList.remove('notranslate');
+                    showingTranslation = false;
+                    button.textContent = 'Translate description to Polish';
+                    status.textContent = '';
+                    return;
+                }
+                const walker = document.createTreeWalker(description, NodeFilter.SHOW_TEXT);
+                const nodes = [];
+                while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    if (node.textContent.trim() && !node.parentElement?.closest('script, style, button')) nodes.push(node);
+                }
+                const texts = nodes.map(node => node.textContent);
+                const text = JSON.stringify(texts);
+                if (!nodes.length) { status.textContent = 'The description is empty.'; return; }
+                button.disabled = true;
+                try {
+                    const result = cachedText === text ? cachedTranslation : await translateDescription(texts, status);
+                    // A new listing or site rerender must not receive an old translation.
+                    if (!description.isConnected || nodes.some((node, i) => !description.contains(node) || node.textContent !== texts[i])) {
+                        status.textContent = 'Description changed. Click again to translate it.';
+                        return;
+                    }
+                    cachedText = text;
+                    cachedTranslation = result;
+                    originalLanguage = description.getAttribute('lang');
+                    hadNoTranslate = description.classList.contains('notranslate');
+                    description.classList.add('notranslate');
+                    description.lang = 'pl';
+                    savedNodes = nodes.map((node, i) => ({node, original: texts[i], translated: result[i]}));
+                    // Change only text nodes: lists, emphasis, links and line breaks stay intact.
+                    for (const entry of savedNodes) entry.node.textContent = entry.translated;
+                    showingTranslation = true;
+                    button.textContent = 'Show original description';
+                    status.textContent = 'Polish · automatically detected source language';
+                } catch (error) {
+                    status.textContent = error.name === 'NotAllowedError'
+                        ? 'Chrome needs another click to start the language model. Try again.'
+                        : 'Translation failed: ' + error.message;
+                } finally { button.disabled = false; }
+            });
+        }
+    }
 
     function locationDirections(text) {
         const match = text.trim().match(/^([A-Z]{2})-(\d{2,6}(?:-\d{2,4})?)\s+([\p{L}][\p{L}\p{M}\d .,'’()/\-]{0,100})$/u);
@@ -57,6 +169,7 @@
         requestAnimationFrame(() => {
             locationUpdatePending = false;
             linkLocations();
+            addDescriptionTranslation();
         });
     }
     // Listings load asynchronously and can change without a full page reload.
