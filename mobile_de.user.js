@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         mobile.de - windowed large photo
-// @version      2.7
+// @version      2.8
 // @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
-// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning.
+// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning. Click ad locations to open Google Maps driving directions in a new tab.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
 // @run-at       document-start
@@ -18,6 +18,51 @@
     let activeClose;
     let clickedPhoto;
     const page = unsafeWindow;
+
+    function locationDirections(text) {
+        const match = text.trim().match(/^([A-Z]{2})-(\d{2,6}(?:-\d{2,4})?)\s+([\p{L}][\p{L}\p{M}\d .,'’()/\-]{0,100})$/u);
+        if (!match) return null;
+        const url = new URL('https://www.google.com/maps/dir/');
+        url.searchParams.set('api', '1');
+        url.searchParams.set('destination', match[2] + ' ' + match[3] + ', ' + match[1]);
+        url.searchParams.set('travelmode', 'driving');
+        return url.href;
+    }
+    function linkLocations() {
+        if (!document.body) return;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const locations = [];
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            if (node.parentElement?.closest('a, button, script, style, textarea, input, select, [contenteditable], [role="dialog"]')) continue;
+            const href = locationDirections(node.textContent);
+            if (href) locations.push({node, href});
+        }
+        for (const {node, href} of locations) {
+            const link = document.createElement('a');
+            link.href = href;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = node.textContent;
+            link.title = 'Show driving distance in Google Maps';
+            link.style.cssText = 'color:inherit;text-decoration:underline;cursor:pointer;';
+            link.addEventListener('click', event => event.stopPropagation());
+            node.replaceWith(link);
+        }
+    }
+    let locationUpdatePending = false;
+    function scheduleLocationLinks() {
+        if (locationUpdatePending) return;
+        locationUpdatePending = true;
+        requestAnimationFrame(() => {
+            locationUpdatePending = false;
+            linkLocations();
+        });
+    }
+    // Listings load asynchronously and can change without a full page reload.
+    new MutationObserver(scheduleLocationLinks).observe(document.documentElement, {childList: true, subtree: true, characterData: true});
+    scheduleLocationLinks();
+
     const imageExtensions = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/avif': 'avif'};
     function savePhoto(photo, name, job) {
         return new Promise((resolve, reject) => {
