@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         mobile.de – Ad Tools
-// @version      2.10
+// @version      2.11
 // @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
-// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Supports Chrome page zoom with Ctrl + mouse wheel, plus trackpad pinch zoom and two-finger panning. Click ad locations to open Google Maps driving directions in a new tab. Translate seller descriptions in-place with automatic language detection, a saved target language, optional automatic translation, preserved formatting, and original text restore.
+// @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Zoom photos with +, − and reset controls, drag to pan enlarged photos, or use Chrome page zoom and trackpad gestures. Click ad locations to open Google Maps driving directions in a new tab. Translate seller descriptions in-place with automatic language detection, a saved target language, optional automatic translation, preserved formatting, and original text restore.
 // @match        https://suchen.mobile.de/*
 // @match        https://www.mobile.de/*
 // @run-at       document-start
@@ -312,14 +312,56 @@
         stage.style.cssText = 'min-width:100%;min-height:100%;display:grid;place-items:center;';
         stage.appendChild(image);
         overlay.appendChild(stage);
+        image.draggable = false;
+        image.style.setProperty('user-select', 'none');
+        let photoZoom = 1;
+        let zoomOutButton, zoomInButton, resetZoomButton;
         const initialPixelRatio = window.devicePixelRatio || 1;
         function sizePhoto() {
             // Page zoom reduces CSS viewport dimensions and increases devicePixelRatio.
             // Compensate for that reduction so the photo grows with browser zoom.
             const zoom = (window.devicePixelRatio || 1) / initialPixelRatio;
-            image.style.setProperty('width', window.innerWidth * zoom + 'px', 'important');
-            image.style.setProperty('height', window.innerHeight * zoom + 'px', 'important');
+            image.style.setProperty('width', window.innerWidth * zoom * photoZoom + 'px', 'important');
+            image.style.setProperty('height', window.innerHeight * zoom * photoZoom + 'px', 'important');
         }
+        function setPhotoZoom(value) {
+            const next = Math.max(1, Math.min(5, value));
+            const ratio = next / photoZoom;
+            const centerX = overlay.scrollLeft + overlay.clientWidth / 2;
+            const centerY = overlay.scrollTop + overlay.clientHeight / 2;
+            photoZoom = next;
+            sizePhoto();
+            overlay.scrollLeft = centerX * ratio - overlay.clientWidth / 2;
+            overlay.scrollTop = centerY * ratio - overlay.clientHeight / 2;
+            image.style.cursor = photoZoom > 1 ? 'grab' : 'default';
+            if (zoomOutButton) zoomOutButton.disabled = photoZoom === 1;
+            if (zoomInButton) zoomInButton.disabled = photoZoom === 5;
+            if (resetZoomButton) resetZoomButton.textContent = 'Reset (' + Math.round(photoZoom * 100) + '%)';
+        }
+        let pan;
+        image.addEventListener('pointerdown', event => {
+            // Only handle mouse dragging; Chrome owns touch/trackpad gestures.
+            if (event.pointerType !== 'mouse' || event.button !== 0
+                || (overlay.scrollWidth <= overlay.clientWidth && overlay.scrollHeight <= overlay.clientHeight)) return;
+            event.preventDefault();
+            pan = {id: event.pointerId, x: event.clientX, y: event.clientY, left: overlay.scrollLeft, top: overlay.scrollTop};
+            image.setPointerCapture(event.pointerId);
+            image.style.cursor = 'grabbing';
+        });
+        image.addEventListener('pointermove', event => {
+            if (!pan || event.pointerId !== pan.id) return;
+            overlay.scrollLeft = pan.left + pan.x - event.clientX;
+            overlay.scrollTop = pan.top + pan.y - event.clientY;
+        });
+        function endPan(event) {
+            if (!pan || event.pointerId !== pan.id) return;
+            pan = undefined;
+            image.style.cursor = photoZoom > 1 ? 'grab' : 'default';
+            if (image.hasPointerCapture(event.pointerId)) image.releasePointerCapture(event.pointerId);
+        }
+        image.addEventListener('pointerup', endPan);
+        image.addEventListener('pointercancel', endPan);
+        image.addEventListener('lostpointercapture', endPan);
         sizePhoto();
         window.addEventListener('resize', sizePhoto);
         const counter = document.createElement('span');
@@ -327,6 +369,7 @@
         overlay.appendChild(counter);
         function show(delta = 0) {
             selected = (selected + delta + photos.length) % photos.length;
+            setPhotoZoom(1);
             overlay.scrollTop = 0;
             overlay.scrollLeft = 0;
             image.src = photos[selected].src;
@@ -358,6 +401,12 @@
         button('Previous photo', '‹', 'left:12px;top:50%;', () => show(-1));
         button('Next photo', '›', 'right:12px;top:50%;', () => show(1));
         button('Close large photos', '×', 'right:12px;top:12px;', close);
+        zoomOutButton = button('Zoom out photo', '−', 'left:12px;bottom:12px;padding:8px 14px;', () => setPhotoZoom(photoZoom / 1.25));
+        zoomInButton = button('Zoom in photo', '+', 'left:70px;bottom:12px;padding:8px 14px;', () => setPhotoZoom(photoZoom * 1.25));
+        resetZoomButton = button('Reset photo zoom', 'Reset (100%)', 'left:128px;bottom:12px;padding:10px 12px;font-size:16px;', () => {
+            setPhotoZoom(1);
+            overlay.scrollLeft = overlay.scrollTop = 0;
+        });
         const downloadStatus = document.createElement('span');
         downloadStatus.setAttribute('role', 'status');
         downloadStatus.style.cssText = 'position:fixed;top:80px;left:12px;max-width:75%;background:#111e;color:white;padding:8px;font:16px sans-serif;';
