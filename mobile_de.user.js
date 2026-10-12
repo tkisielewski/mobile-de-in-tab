@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         mobile.de – Ad Tools
-// @version      2.11
+// @version      2.12
 // @updateURL    https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @downloadURL  https://raw.githubusercontent.com/tkisielewski/mobile-de-in-tab/main/mobile_de.user.js
 // @description  Opens the clicked ad photo in a large viewer inside the current tab for side-by-side comparison. Navigate with arrow buttons or keyboard keys, wrap between the first and last photo, and close with Escape or ×. Save all gallery photos as numbered files with progress, cancellation, and retry. Zoom photos with +, − and reset controls, drag to pan enlarged photos, or use Chrome page zoom and trackpad gestures. Click ad locations to open Google Maps driving directions in a new tab. Translate seller descriptions in-place with automatic language detection, a saved target language, optional automatic translation, preserved formatting, and original text restore.
@@ -30,6 +30,7 @@
         automatic: GM_getValue('translationAutomatic', false) === true
     };
     const descriptionControls = new WeakMap();
+    const automaticTranslationAttempts = new Set();
     async function translateDescription(texts, status, targetLanguage) {
         if (!page.LanguageDetector || !page.Translator) {
             throw new Error('This Chrome version does not support description translation. Update Chrome and try again.');
@@ -68,11 +69,13 @@
         for (const description of document.querySelectorAll('[data-testid="vip-vehicle-description-text"]')) {
             const existing = descriptionControls.get(description);
             if (existing?.isConnected) continue;
+            if (description.closest('section')?.querySelector('[data-mobile-ad-tools="translation"]')) continue;
             const section = description.closest('section');
             const heading = section?.querySelector('h2,h3');
             if (!heading) continue;
             const controls = document.createElement('div');
             controls.className = 'notranslate';
+            controls.setAttribute('data-mobile-ad-tools', 'translation');
             controls.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0;';
             const button = document.createElement('button');
             button.type = 'button';
@@ -171,7 +174,11 @@
                 if (automatic.checked && !showingTranslation) runTranslation();
             });
             // Attempt once per new description. Model setup may still require a click.
-            if (automatic.checked) runTranslation();
+            const automaticKey = new URL(location.href).searchParams.get('id') + ':' + target.value;
+            if (automatic.checked && !automaticTranslationAttempts.has(automaticKey)) {
+                automaticTranslationAttempts.add(automaticKey);
+                runTranslation();
+            }
         }
     }
 
@@ -206,18 +213,32 @@
             node.replaceWith(link);
         }
     }
-    let locationUpdatePending = false;
+    let enhancementTimer;
+    const observerOptions = {childList: true, subtree: true, characterData: true};
+    const enhancementObserver = new MutationObserver(records => {
+        // Progress text and gallery updates are ours, not new listing content.
+        if (records.every(record => {
+            const element = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;
+            return element?.closest('[data-mobile-ad-tools="translation"], [role="dialog"]');
+        })) return;
+        scheduleLocationLinks();
+    });
     function scheduleLocationLinks() {
-        if (locationUpdatePending) return;
-        locationUpdatePending = true;
-        requestAnimationFrame(() => {
-            locationUpdatePending = false;
-            linkLocations();
-            addDescriptionTranslation();
-        });
+        if (enhancementTimer !== undefined) return;
+        enhancementTimer = setTimeout(() => {
+            enhancementTimer = undefined;
+            // Do not observe changes made by adding our own links and controls.
+            enhancementObserver.disconnect();
+            try {
+                linkLocations();
+                addDescriptionTranslation();
+            } finally {
+                enhancementObserver.observe(document.documentElement, observerOptions);
+            }
+        }, 200);
     }
-    // Listings load asynchronously and can change without a full page reload.
-    new MutationObserver(scheduleLocationLinks).observe(document.documentElement, {childList: true, subtree: true, characterData: true});
+    // Batch asynchronous site updates, with at most one scan per 200 ms.
+    enhancementObserver.observe(document.documentElement, observerOptions);
     scheduleLocationLinks();
 
     const imageExtensions = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/avif': 'avif'};
